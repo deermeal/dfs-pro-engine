@@ -3,6 +3,7 @@ import pandas as pd
 import random
 
 st.set_page_config(page_title="DFS PRO ENGINE", layout="wide")
+st.caption(f"Current Sport: {SPORT}")
 
 st.markdown("""
 <style>
@@ -45,10 +46,26 @@ def normalize(df):
     return df
 
 def valid(pos, slot):
-    if slot=="UTIL": return True
-    if slot=="G": return "PG" in pos or "SG" in pos
-    if slot=="F": return "SF" in pos or "PF" in pos
-    return slot in pos
+    pos = str(pos)
+
+    if slot == "UTIL":
+        return True
+
+    if SPORT == "NBA":
+        if slot == "G":
+            return "PG" in pos or "SG" in pos
+        if slot == "F":
+            return "SF" in pos or "PF" in pos
+        return slot in pos
+
+    if SPORT == "NHL":
+        return slot in pos
+
+    if SPORT == "MLB":
+        if slot == "OF":
+            return "OF" in pos
+        return slot in pos
+
 
 def build(df):
     lineup, sal, used = [], 0, set()
