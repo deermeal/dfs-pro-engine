@@ -15,8 +15,20 @@ pw = st.text_input("Enter Password", type="password")
 if pw != PASSWORD:
     st.stop()
 
-SALARY_CAP = 50000
-ROSTER = ["PG","SG","SF","PF","C","G","F","UTIL"]
+SPORT = st.selectbox("Sport", ["NBA", "NHL", "MLB"])
+
+if SPORT == "NBA":
+    SALARY_CAP = 50000
+    ROSTER = ["PG","SG","SF","PF","C","G","F","UTIL"]
+
+elif SPORT == "NHL":
+    SALARY_CAP = 50000
+    ROSTER = ["C","C","W","W","W","D","D","G","UTIL"]
+
+elif SPORT == "MLB":
+    SALARY_CAP = 50000
+    ROSTER = ["P","P","C","1B","2B","3B","SS","OF","OF","OF"]
+
 
 st.title("🏀 DFS PRO ENGINE (Cloud Ready)")
 
