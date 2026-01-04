@@ -69,12 +69,34 @@ def normalize(df):
 
     return df
 
+def normalize(df):
+    df = df.rename(columns={
+        "sal":"salary",
+        "fpts":"projection",
+        "pos":"position",
+        "batting_order":"order",
+        "game time":"game_time"
+    })
+
+    for c in ["salary","projection"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    if "game_time" in df.columns:
+        df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
+
+    return df
+
 
 def valid(pos, slot):
     pos = str(pos)
 
     if slot == "UTIL":
-        return pos != "G"
+        return pos not in ["P", "G"]
+
+    if SPORT == "MLB":
+        if slot == "OF":
+            return "OF" in pos
+        return slot in pos
 
     if SPORT == "NBA":
         if slot == "G":
@@ -86,10 +108,6 @@ def valid(pos, slot):
     if SPORT == "NHL":
         return slot in pos
 
-    if SPORT == "MLB":
-        if slot == "OF":
-            return "OF" in pos
-        return slot in pos
 
 from datetime import datetime
 
@@ -257,15 +275,24 @@ final_keep = st.slider("Final Lineups to Keep", 1, 150, 20)
 
 def portfolio_score(lineup, sim=None):
     proj = sum(p["projection"] for p in lineup)
-    own = sum(p.get("ownership", 5) for p in lineup)
+    own = sum(p.get("ownership", 6) for p in lineup)
 
-    leverage = max(0, 120 - own) * 0.05
+    leverage = max(0, 120 - own) * 0.06
+    corr = 0
+
+    if SPORT == "MLB":
+        corr = mlb_stack_bonus(lineup)
+        proj += sum(order_bonus(p) for p in lineup)
+
+    if SPORT == "NHL":
+        corr = nhl_stack_bonus(lineup)
 
     sim_bonus = 0
     if sim:
         sim_bonus = sim.get("top1", 0) * 50 + sim.get("win", 0) * 100
 
-    return proj + leverage + sim_bonus
+    return proj + leverage + corr + sim_bonus
+
 st.markdown("### 📊 Exposure Summary")
 
 exp_rows = []
@@ -299,3 +326,37 @@ def nhl_stack_bonus(lineup):
         if count >= 3:
             bonus += count * 4
     return bonus
+
+def mlb_pitcher_ok(lineup):
+    pitchers = [p for p in lineup if "P" in str(p["position"])]
+
+    if len(pitchers) != 2:
+        return False
+
+    for h in lineup:
+        if "P" not in h["position"]:
+            for p in pitchers:
+                if h.get("opp") == p.get("team"):
+                    return False
+    return True
+
+def mlb_stack_bonus(lineup):
+    teams = {}
+    for p in lineup:
+        if "P" not in p["position"]:
+            teams[p["team"]] = teams.get(p["team"], 0) + 1
+
+    bonus = 0
+    for count in teams.values():
+        if count >= 3:
+            bonus += count * 5
+    return bonus
+if SPORT == "MLB":
+    if not mlb_pitcher_ok(l):
+        continue
+
+def order_bonus(p):
+    try:
+        return max(0, 9 - int(p.get("order", 9))) * 0.8
+    except:
+        return 0
