@@ -51,12 +51,30 @@ def normalize(df):
 
     return df
 
+def normalize(df):
+    df = df.rename(columns={
+        "sal":"salary",
+        "fpts":"projection",
+        "pos":"position",
+        "line":"line",
+        "pp":"pp",
+        "game time":"game_time"
+    })
+
+    for c in ["salary","projection"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    if "game_time" in df.columns:
+        df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
+
+    return df
+
 
 def valid(pos, slot):
     pos = str(pos)
 
     if slot == "UTIL":
-        return True
+        return pos != "G"
 
     if SPORT == "NBA":
         if slot == "G":
@@ -72,6 +90,7 @@ def valid(pos, slot):
         if slot == "OF":
             return "OF" in pos
         return slot in pos
+
 from datetime import datetime
 
 def get_locked_players(df, current_time):
@@ -89,6 +108,16 @@ def get_locked_players(df, current_time):
                     "slot": None
                 })
     return locked
+def exposure_ok(lineup, exposure, max_pct, total):
+    for p in lineup:
+        used = exposure.get(p["player"], 0)
+        if total > 0 and used / total > max_pct:
+            return False
+    return True
+
+def update_exposure(lineup, exposure):
+    for p in lineup:
+        exposure[p["player"]] = exposure.get(p["player"], 0) + 1
 
 
 def build(df, locked_players=[]):
@@ -119,6 +148,10 @@ def build(df, locked_players=[]):
 
     return lineup if len(lineup) == len(ROSTER) else None
 
+if SPORT == "NHL":
+    if not nhl_goalie_ok(l):
+        continue
+
 if uploaded:
     df = normalize(pd.read_csv(uploaded))
     st.success("CSV Loaded")
@@ -137,10 +170,11 @@ if enable_late:
     current_time = st.time_input("Current Time (ET)")
 
     if st.button("BUILD"):
-        lineups = []
+        exposure = {}
+all_lineups = []
 tries = 0
 
-while len(lineups) < n and tries < 500:
+while len(all_lineups) < n and tries < n * 15:
     tries += 1
 
     locked = []
@@ -148,8 +182,23 @@ while len(lineups) < n and tries < 500:
         locked = get_locked_players(df, current_time)
 
     l = build(df, locked)
-    if l:
-        lineups.append(l)
+    if not l:
+        continue
+
+    if not exposure_ok(l, exposure, max_exposure / 100, n):
+        continue
+
+    update_exposure(l, exposure)
+    all_lineups.append(l)
+scored = []
+
+for i, l in enumerate(all_lineups):
+    sim_data = sim_results[i] if run_sim else None
+    score = portfolio_score(l, sim_data)
+    scored.append((score, l))
+
+scored.sort(reverse=True)
+final_lineups = [l for _, l in scored[:final_keep]]
 
         rows=[]
         for i,l in enumerate(lineups):
@@ -161,3 +210,92 @@ while len(lineups) < n and tries < 500:
         out=pd.DataFrame(rows)
         st.dataframe(out,use_container_width=True)
         st.download_button("Download CSV", out.to_csv(index=False), "lineups.csv")
+FIELD_MAP = {
+    "<1k": 500,
+    "1k–10k": 5000,
+    "10k–100k": 25000,
+    "100k+": 100000
+}
+import numpy as np
+
+def simulate_player_outcome(p):
+    # NBA variance ~ 30%
+    return np.random.normal(p["projection"], p["projection"] * 0.30)
+
+def run_contest_sim(lineups, sims, field):
+    results = [{"win":0, "top1":0, "cash":0} for _ in lineups]
+
+    for _ in range(sims):
+        scores = [simulate_lineup(l) for l in lineups]
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+
+        for i, idx in enumerate(ranked):
+            if i == 0:
+                results[idx]["win"] += 1
+            if i < max(1, field // 100):
+                results[idx]["top1"] += 1
+            if i < max(1, field // 4):
+                results[idx]["cash"] += 1
+
+    for r in results:
+        r["win"] /= sims
+        r["top1"] /= sims
+        r["cash"] /= sims
+
+    return results
+ if run_sim:
+    field = FIELD_MAP[field_size]
+    sim_results = run_contest_sim(lineups, sims, field)
+st.markdown("### 🎛️ Portfolio Controls")
+max_exposure = st.slider("Max Player Exposure (%)", 10, 100, 40)
+final_keep = st.slider("Final Lineups to Keep", 1, 150, 20)
+
+    for i, r in enumerate(sim_results):
+        rows[i]["Win %"] = round(r["win"] * 100, 2)
+        rows[i]["Top 1%"] = round(r["top1"] * 100, 2)
+        rows[i]["Cash %"] = round(r["cash"] * 100, 2)
+
+def portfolio_score(lineup, sim=None):
+    proj = sum(p["projection"] for p in lineup)
+    own = sum(p.get("ownership", 5) for p in lineup)
+
+    leverage = max(0, 120 - own) * 0.05
+
+    sim_bonus = 0
+    if sim:
+        sim_bonus = sim.get("top1", 0) * 50 + sim.get("win", 0) * 100
+
+    return proj + leverage + sim_bonus
+st.markdown("### 📊 Exposure Summary")
+
+exp_rows = []
+for player, count in exposure.items():
+    exp_rows.append({
+        "Player": player,
+        "Exposure %": round(count / len(all_lineups) * 100, 1)
+    })
+
+st.dataframe(pd.DataFrame(exp_rows).sort_values("Exposure %", ascending=False))
+
+def nhl_goalie_ok(lineup):
+    goalies = [p for p in lineup if "G" in str(p["position"])]
+    if len(goalies) != 1:
+        return False
+
+    g = goalies[0]
+    for p in lineup:
+        if p["team"] == g.get("opp"):
+            return False
+    return True
+
+def nhl_stack_bonus(lineup):
+    stacks = {}
+    for p in lineup:
+        key = (p.get("team"), p.get("line"))
+        stacks[key] = stacks.get(key, 0) + 1
+
+    bonus = 0
+    for (_, _), count in stacks.items():
+        if count >= 3:
+            bonus += count * 4
+    return bonus
