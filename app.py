@@ -215,7 +215,8 @@ for i, l in enumerate(all_lineups):
 scored.sort(reverse=True)
 final_lineups = [l for _, l in scored[:final_keep]]
 
-        rows=[]
+rows = []
+
         for i,l in enumerate(lineups):
             r={"Lineup":i+1,"Salary":sum(p["salary"] for p in l),
                "Projection":sum(p["projection"] for p in l)}
