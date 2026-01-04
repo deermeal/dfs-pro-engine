@@ -11,10 +11,13 @@ button {font-size:18px !important; padding:12px !important;}
 </style>
 """, unsafe_allow_html=True)
 
-PASSWORD = "dfs123"
+PASSWORD = "dfs123"  # change later
+
 pw = st.text_input("Enter Password", type="password")
 if pw != PASSWORD:
+    st.warning("Enter password to continue")
     st.stop()
+
 
 SPORT = st.selectbox("Sport", ["NBA", "NHL", "MLB"])
 
