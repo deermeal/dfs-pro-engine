@@ -39,20 +39,44 @@ st.title("🏀 DFS PRO ENGINE (Cloud Ready)")
 uploaded = st.file_uploader("Upload DraftKings CSV", type=["csv"])
 
 def normalize(df):
-    df = df.rename(columns={
-        "sal":"salary",
-        "fpts":"projection",
-        "pos":"position",
-        "game time":"game_time"
-    })
+    # Normalize column names
+    df.columns = [c.lower().strip() for c in df.columns]
 
-    for c in ["salary","projection"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    rename_map = {
+        "sal": "salary",
+        "salary($)": "salary",
+        "dk salary": "salary",
 
-    if "game_time" in df.columns:
-        df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
+        "fpts": "projection",
+        "proj": "projection",
+        "fantasy points": "projection",
+
+        "pos": "position",
+        "positions": "position",
+
+        "teamabbr": "team",
+        "oppabbr": "opp",
+    }
+
+    df = df.rename(columns=rename_map)
+
+    REQUIRED = ["player", "position", "salary", "projection"]
+
+    missing = [c for c in REQUIRED if c not in df.columns]
+    if missing:
+        st.error(f"Missing required columns: {missing}")
+        st.stop()
+
+    df["salary"] = pd.to_numeric(df["salary"], errors="coerce").fillna(0)
+    df["projection"] = pd.to_numeric(df["projection"], errors="coerce").fillna(0)
+
+    if "ownership" in df.columns:
+        df["ownership"] = pd.to_numeric(df["ownership"], errors="coerce").fillna(5)
+    else:
+        df["ownership"] = 5.0
 
     return df
+
 
 def normalize(df):
     df = df.rename(columns={
