@@ -168,6 +168,7 @@ if SPORT == "NHL":
         continue
 
 if uploaded:
+    rows = []
     df = normalize(pd.read_csv(uploaded))
     st.success("CSV Loaded")
 
@@ -214,8 +215,6 @@ for i, l in enumerate(all_lineups):
 
 scored.sort(reverse=True)
 final_lineups = [l for _, l in scored[:final_keep]]
-
-rows = []
 
         for i,l in enumerate(lineups):
             r={"Lineup":i+1,"Salary":sum(p["salary"] for p in l),
