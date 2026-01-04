@@ -54,6 +54,9 @@ def normalize(df):
         "pos": "position",
         "positions": "position",
 
+        "batting_order": "order",
+        "game time": "game_time",
+
         "teamabbr": "team",
         "oppabbr": "opp",
     }
@@ -61,7 +64,6 @@ def normalize(df):
     df = df.rename(columns=rename_map)
 
     REQUIRED = ["player", "position", "salary", "projection"]
-
     missing = [c for c in REQUIRED if c not in df.columns]
     if missing:
         st.error(f"Missing required columns: {missing}")
@@ -75,43 +77,11 @@ def normalize(df):
     else:
         df["ownership"] = 5.0
 
-    return df
-
-
-def normalize(df):
-    df = df.rename(columns={
-        "sal":"salary",
-        "fpts":"projection",
-        "pos":"position",
-        "line":"line",
-        "pp":"pp",
-        "game time":"game_time"
-    })
-
-    for c in ["salary","projection"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
     if "game_time" in df.columns:
         df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
 
     return df
 
-def normalize(df):
-    df = df.rename(columns={
-        "sal":"salary",
-        "fpts":"projection",
-        "pos":"position",
-        "batting_order":"order",
-        "game time":"game_time"
-    })
-
-    for c in ["salary","projection"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    if "game_time" in df.columns:
-        df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
-
-    return df
 
 
 def valid(pos, slot):
