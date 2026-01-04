@@ -1,13 +1,17 @@
 import streamlit as st
 import pandas as pd
-import random
 import numpy as np
+import random
+from datetime import datetime, time
 
 # =========================
 # PAGE CONFIG
 # =========================
 st.set_page_config(page_title="DFS PRO ENGINE", layout="wide")
 
+# =========================
+# PASSWORD
+# =========================
 PASSWORD = "dfs123"
 pw = st.text_input("Enter Password", type="password")
 if pw != PASSWORD:
@@ -15,26 +19,47 @@ if pw != PASSWORD:
     st.stop()
 
 # =========================
-# SPORT SELECTION
+# SPORT + SLATE TYPE
 # =========================
-SPORT = st.selectbox("Sport", ["NBA", "NHL", "MLB"])
-st.caption(f"Current Sport: {SPORT}")
+SPORT = st.selectbox(
+    "Sport",
+    ["NBA", "NFL", "CBB", "NHL", "MLB", "SOCCER"]
+)
 
-if SPORT == "NBA":
-    SALARY_CAP = 50000
-    ROSTER = ["PG","SG","SF","PF","C","G","F","UTIL"]
-elif SPORT == "NHL":
-    SALARY_CAP = 50000
-    ROSTER = ["C","C","W","W","W","D","D","G","UTIL"]
-else:
-    SALARY_CAP = 50000
-    ROSTER = ["P","P","C","1B","2B","3B","SS","OF","OF","OF"]
+SLATE = st.selectbox(
+    "Slate Type",
+    ["Classic", "Showdown"]
+)
 
-st.title("🏀 DFS PRO ENGINE (Cloud Ready)")
+st.caption(f"Sport: {SPORT} | Slate: {SLATE}")
+
+# =========================
+# ROSTERS
+# =========================
+def get_roster(sport, slate):
+    if slate == "Showdown":
+        return ["CPT", "UTIL", "UTIL", "UTIL", "UTIL", "UTIL"]
+
+    return {
+        "NBA": ["PG","SG","SF","PF","C","G","F","UTIL"],
+        "NFL": ["QB","RB","RB","WR","WR","WR","TE","FLEX","DST"],
+        "CBB": ["G","G","G","F","F","UTIL","UTIL","UTIL"],
+        "NHL": ["C","C","W","W","W","D","D","G","UTIL"],
+        "MLB": ["P","P","C","1B","2B","3B","SS","OF","OF","OF"],
+        "SOCCER": ["GK","D","D","M","M","F","F","UTIL"]
+    }[sport]
+
+ROSTER = get_roster(SPORT, SLATE)
+SALARY_CAP = 50000
+
+# =========================
+# UI
+# =========================
+st.title("🔥 DFS PRO ENGINE (Stable Cloud Build)")
 uploaded = st.file_uploader("Upload DraftKings Salaries CSV", type=["csv"])
 
 # =========================
-# NORMALIZE DK CSV
+# NORMALIZE CSV
 # =========================
 def normalize(df):
     df.columns = [c.lower().strip() for c in df.columns]
@@ -44,7 +69,8 @@ def normalize(df):
         "salary": "salary",
         "avgpointspergame": "projection",
         "position": "position",
-        "teamabbrev": "team"
+        "teamabbrev": "team",
+        "game time": "game_time"
     })
 
     required = ["player", "position", "salary", "projection"]
@@ -55,6 +81,10 @@ def normalize(df):
 
     df["salary"] = pd.to_numeric(df["salary"], errors="coerce").fillna(0)
     df["projection"] = pd.to_numeric(df["projection"], errors="coerce").fillna(0)
+    df["ownership"] = 5.0
+
+    if "game_time" in df.columns:
+        df["game_time"] = pd.to_datetime(df["game_time"], errors="coerce")
 
     return df
 
@@ -64,32 +94,54 @@ def normalize(df):
 def valid(pos, slot):
     pos = str(pos)
 
-    if slot == "UTIL":
+    if slot in ["UTIL", "FLEX"]:
         return True
 
-    if SPORT == "NBA":
-        if slot == "G":
-            return "PG" in pos or "SG" in pos
-        if slot == "F":
-            return "SF" in pos or "PF" in pos
-        return slot in pos
+    if slot == "CPT":
+        return True
 
-    if SPORT == "NHL":
-        return slot in pos
+    if slot == "G":
+        return any(x in pos for x in ["PG","SG","G"])
+    if slot == "F":
+        return any(x in pos for x in ["SF","PF","F"])
 
-    if SPORT == "MLB":
-        if slot == "OF":
-            return "OF" in pos
-        return slot in pos
+    return slot in pos
 
-    return False
+# =========================
+# LATE SWAP
+# =========================
+def get_locked_players(df, current_time):
+    locked = set()
+    if "game_time" not in df.columns or not current_time:
+        return locked
+
+    now = datetime.combine(datetime.today(), current_time)
+
+    for _, r in df.iterrows():
+        if pd.notna(r["game_time"]) and r["game_time"] <= now:
+            locked.add(r["player"])
+    return locked
+
+# =========================
+# EXPOSURE
+# =========================
+def exposure_ok(lineup, exposure, max_pct, total):
+    for p in lineup:
+        used = exposure.get(p["player"], 0)
+        if total > 0 and used / total > max_pct:
+            return False
+    return True
+
+def update_exposure(lineup, exposure):
+    for p in lineup:
+        exposure[p["player"]] = exposure.get(p["player"], 0) + 1
 
 # =========================
 # LINEUP BUILDER
 # =========================
-def build_lineup(df):
+def build_lineup(df, locked_players):
     lineup = []
-    used = set()
+    used = set(locked_players)
     salary = 0
     pool = df.sample(frac=1).to_dict("records")
 
@@ -110,7 +162,7 @@ def build_lineup(df):
     return lineup if len(lineup) == len(ROSTER) else None
 
 # =========================
-# #3 CORRELATION (SAFE)
+# CORRELATION
 # =========================
 def correlation_bonus(lineup):
     teams = {}
@@ -119,18 +171,14 @@ def correlation_bonus(lineup):
     for p in lineup:
         teams[p["team"]] = teams.get(p["team"], 0) + 1
 
-    for count in teams.values():
-        if SPORT == "NBA" and count >= 3:
-            bonus += count * 2
-        if SPORT == "MLB" and count >= 3:
-            bonus += count * 4
-        if SPORT == "NHL" and count >= 2:
-            bonus += count * 3
+    for c in teams.values():
+        if c >= 3:
+            bonus += c * 2
 
     return bonus
 
 # =========================
-# #4 CONTEST SIMULATION
+# SIMULATION
 # =========================
 def simulate_lineup(lineup):
     total = 0
@@ -170,40 +218,51 @@ FIELD_MAP = {
 }
 
 # =========================
-# APP LOGIC
+# APP RUN
 # =========================
 if uploaded:
     df = normalize(pd.read_csv(uploaded))
-    st.success("DraftKings CSV Loaded")
+    st.success("CSV Loaded")
 
-    n = st.slider("Number of Lineups", 1, 150, 20)
+    n = st.slider("Lineups", 1, 150, 20)
+    max_exposure = st.slider("Max Player Exposure (%)", 10, 100, 40) / 100
+
+    enable_late = st.checkbox("Enable Late Swap")
+    current_time = st.time_input("Current Time") if enable_late else None
 
     run_sim = st.checkbox("Run Contest Simulation")
     sims = st.slider("Simulations", 200, 3000, 1000, step=200)
     field_size = st.selectbox("Contest Size", list(FIELD_MAP.keys()))
 
     if st.button("BUILD"):
+        exposure = {}
         lineups = []
         tries = 0
 
+        locked_players = get_locked_players(df, current_time)
+
         while len(lineups) < n and tries < n * 25:
             tries += 1
-            l = build_lineup(df)
-            if l:
-                lineups.append(l)
+            l = build_lineup(df, locked_players)
+            if not l:
+                continue
+            if not exposure_ok(l, exposure, max_exposure, n):
+                continue
 
-        rows = []
+            update_exposure(l, exposure)
+            lineups.append(l)
+
         sim_results = None
-
         if run_sim:
             sim_results = run_simulation(lineups, sims, FIELD_MAP[field_size])
 
+        rows = []
         for i, l in enumerate(lineups):
             r = {
                 "Lineup": i + 1,
                 "Salary": sum(p["salary"] for p in l),
                 "Projection": round(sum(p["projection"] for p in l), 2),
-                "Correlation Bonus": correlation_bonus(l)
+                "Correlation": correlation_bonus(l)
             }
 
             if sim_results:
@@ -218,4 +277,4 @@ if uploaded:
 
         out = pd.DataFrame(rows)
         st.dataframe(out, use_container_width=True)
-        st.download_button("Download Lineups CSV", out.to_csv(index=False), "dfs_lineups.csv")
+        st.download_button("Download CSV", out.to_csv(index=False), "dfs_lineups.csv")
