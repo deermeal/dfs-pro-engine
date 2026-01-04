@@ -11,3 +11,11 @@ Normalizes different CSV column formats automatically
 Generates DFS lineups based on salary cap and projections
 
 Supports multiple lineup generation
+# DFS Pro Engine
+
+Streamlit-based Daily Fantasy Sports lineup optimizer.
+
+## How to run locally
+```bash
+pip install -r requirements.txt
+streamlit run app.py
