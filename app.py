@@ -12,13 +12,13 @@ PASSWORD = "dfs123"
 if st.text_input("Password", type="password") != PASSWORD:
     st.stop()
 
+SALARY_CAP = 50000
+
 # ======================
 # SPORT / SLATE
 # ======================
 SPORT = st.selectbox("Sport", ["NBA","NFL","CBB","NHL","MLB","SOCCER"])
 SLATE = st.selectbox("Slate Type", ["Classic","Showdown"])
-
-SALARY_CAP = 50000
 
 ROSTERS = {
     "NBA": ["PG","SG","SF","PF","C","G","F","UTIL"],
@@ -49,72 +49,83 @@ def normalize(df):
     for c in ["salary","projection"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    df["ownership"] = 5.0
+    df["ownership"] = 5.0  # default if none provided
     return df
 
 # ======================
-# RULES
+# RULE HELPERS
 # ======================
-def valid(pos, slot):
-    if slot in ["UTIL","FLEX","CPT"]:
+def valid_position(player_pos, roster_slot):
+    if roster_slot in ["UTIL","FLEX"]:
         return True
-    return slot in pos
+    if roster_slot == "CPT":
+        return True
+    return roster_slot in player_pos
 
 def stack_bonus(lineup):
     teams = {}
     bonus = 0
-    for p in lineup:
-        teams[p["team"]] = teams.get(p["team"],0)+1
 
-    for t,c in teams.items():
-        if SPORT=="MLB" and c>=3:
-            bonus += c*4
-        if SPORT in ["NBA","CBB","NHL"] and c>=2:
-            bonus += c*2
-        if SPORT=="NFL" and c>=2:
-            bonus += c*3
-        if SPORT=="SOCCER" and c>=2:
-            bonus += c*3
+    for p in lineup:
+        teams[p["team"]] = teams.get(p["team"], 0) + 1
+
+    for team, count in teams.items():
+        if SPORT == "MLB" and count >= 3:
+            bonus += count * 4
+        elif SPORT in ["NBA","CBB","NHL"] and count >= 2:
+            bonus += count * 2
+        elif SPORT in ["NFL","SOCCER"] and count >= 2:
+            bonus += count * 3
 
     return bonus
 
 # ======================
-# SIMULATION / EV
+# SIMULATION + EV
 # ======================
-def simulate(lineup):
-    total = 0
+def simulate_lineup(lineup):
+    score = 0
     for p in lineup:
         mu = p["projection"]
-        total += np.random.normal(mu, mu * 0.30)
-    return total + stack_bonus(lineup)
+        score += np.random.normal(mu, mu * 0.30)
+    return score + stack_bonus(lineup)
 
-PAYOUTS = [(0.01,50),(0.05,10),(0.25,2)]
+PAYOUTS = [
+    (0.01, 50),
+    (0.05, 10),
+    (0.25, 2)
+]
 
-def ev_score(lineup, sims=500):
-    scores = sorted([simulate(lineup) for _ in range(sims)], reverse=True)
+def ev_score(lineup, sims=800):
+    results = sorted(
+        [simulate_lineup(lineup) for _ in range(sims)],
+        reverse=True
+    )
     ev = 0
-    for pct, pay in PAYOUTS:
-        idx = int(len(scores)*pct)
-        ev += scores[idx] * pay * 0.01
+    for pct, payout in PAYOUTS:
+        idx = int(len(results) * pct)
+        ev += results[idx] * payout * 0.01
     return ev
 
 # ======================
-# OPTIMIZER (FIXED SALARY)
+# OPTIMIZER
 # ======================
-def build_lineup(df, exposure, max_exp):
+def build_lineup(df, exposure, max_lineups, excluded):
     prob = LpProblem("DFS", LpMaximize)
     x = LpVariable.dicts("p", df.index, 0, 1, LpBinary)
 
     # Objective: projection + leverage
     prob += lpSum(
-        x[i] * (df.loc[i,"projection"] - df.loc[i,"ownership"]*0.4)
+        x[i] * (
+            df.loc[i,"projection"]
+            - df.loc[i,"ownership"] * 0.4
+        )
         for i in df.index
     )
 
-    # 🔒 SALARY CONSTRAINT (CPT INCLUDED)
+    # Salary (CPT costs 1.5x)
     prob += lpSum(
         x[i] * (
-            df.loc[i,"salary"] * (1.5 if SLATE=="Showdown" and df.loc[i,"position"]=="CPT" else 1)
+            df.loc[i,"salary"] * (1.5 if SLATE=="Showdown" else 1)
         )
         for i in df.index
     ) <= SALARY_CAP
@@ -122,62 +133,79 @@ def build_lineup(df, exposure, max_exp):
     # Roster size
     prob += lpSum(x[i] for i in df.index) == len(ROSTER)
 
-    # Position rules
+    # Position constraints
     for slot in set(ROSTER):
         prob += lpSum(
-            x[i] for i in df.index if valid(df.loc[i,"position"], slot)
+            x[i]
+            for i in df.index
+            if valid_position(df.loc[i,"position"], slot)
         ) >= ROSTER.count(slot)
 
     # Exposure control
-    for p,c in exposure.items():
-        if c / max(1,max_exp) > 0.6:
-            prob += lpSum(x[i] for i in df.index if df.loc[i,"player"]==p) == 0
+    for player, count in exposure.items():
+        if count / max_lineups > 0.6:
+            prob += lpSum(
+                x[i] for i in df.index if df.loc[i,"player"] == player
+            ) == 0
 
-    prob.solve(PULP_CBC_CMD(msg=0))
+    # Exclusions (injury / out)
+    for i in df.index:
+        if df.loc[i,"player"] in excluded:
+            prob += x[i] == 0
 
-    lineup = df.loc[[i for i in df.index if x[i].value()==1]].to_dict("records")
+    prob.solve(PULP_CBC_CMD(msg=False))
 
-    # Apply CPT multiplier AFTER selection (salary already counted)
-    if SLATE=="Showdown":
-        cpt = max(lineup, key=lambda p:p["projection"])
-        cpt["projection"] *= 1.5
+    lineup = df.loc[
+        [i for i in df.index if x[i].value() == 1]
+    ].to_dict("records")
+
+    # Apply CPT multiplier AFTER optimization
+    if SLATE == "Showdown" and lineup:
+        cpt = max(lineup, key=lambda p: p["projection"])
         cpt["salary"] *= 1.5
-        cpt["position"] = "CPT"
+        cpt["projection"] *= 1.5
 
     return lineup
 
 # ======================
-# RUN
+# RUN APP
 # ======================
 if uploaded:
     df = normalize(pd.read_csv(uploaded))
-    n = st.slider("Lineups",1,50,20)
-    sims = st.slider("Simulations",300,2000,800)
-    max_exp = st.slider("Max Exposure %",10,100,40)
 
-    if st.button("BUILD"):
+    excluded_players = st.multiselect(
+        "Exclude Players (Injury / Out / Fade)",
+        sorted(df["player"].unique())
+    )
+
+    n = st.slider("Number of Lineups", 1, 50, 20)
+    sims = st.slider("Simulations per Lineup", 300, 2000, 800)
+    max_exp = st.slider("Max Exposure %", 10, 100, 40)
+
+    if st.button("BUILD LINEUPS"):
         exposure = {}
-        lineups = []
+        portfolios = []
 
         for _ in range(n):
-            l = build_lineup(df, exposure, n)
-            for p in l:
-                exposure[p["player"]] = exposure.get(p["player"],0)+1
-            lineups.append(l)
+            lineup = build_lineup(df, exposure, n, excluded_players)
+            for p in lineup:
+                exposure[p["player"]] = exposure.get(p["player"], 0) + 1
+            portfolios.append(lineup)
 
-        rows=[]
-        for i,l in enumerate(lineups):
+        rows = []
+        for i, l in enumerate(portfolios):
             rows.append({
-                "Lineup": i+1,
-                "Salary": int(sum(p["salary"] for p in l)),
-                "Projection": round(sum(p["projection"] for p in l),2),
+                "Lineup": i + 1,
+                "Salary": round(sum(p["salary"] for p in l), 0),
+                "Projection": round(sum(p["projection"] for p in l), 2),
                 "Stack Bonus": stack_bonus(l),
-                "EV": round(ev_score(l,sims),2),
-                **{f"P{j+1}":p["player"] for j,p in enumerate(l)}
+                "EV": round(ev_score(l, sims), 2),
+                **{f"P{j+1}": p["player"] for j,p in enumerate(l)}
             })
 
         out = pd.DataFrame(rows).sort_values("EV", ascending=False)
         st.dataframe(out, use_container_width=True)
+
         st.download_button(
             "Download DraftKings CSV",
             out.to_csv(index=False),
