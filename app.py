@@ -1,108 +1,116 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pulp import LpProblem, LpMaximize, LpVariable, lpSum, LpBinary
+from pulp import *
 
-# =========================
-# CONFIG
-# =========================
+# ======================
+# APP CONFIG
+# ======================
 st.set_page_config(page_title="DFS PRO ENGINE", layout="wide")
 
 PASSWORD = "dfs123"
-pw = st.text_input("Password", type="password")
-if pw != PASSWORD:
+if st.text_input("Password", type="password") != PASSWORD:
     st.stop()
 
-SALARY_CAP = 50000
+st.title("DFS Pro Engine — SaberSim Style")
 
-# =========================
+# ======================
 # SPORT / SLATE
-# =========================
-SPORT = st.selectbox("Sport", ["NBA", "NFL", "MLB", "NHL"])
-SLATE = st.selectbox("Slate Type", ["Classic", "Showdown"])
+# ======================
+SPORT = st.selectbox("Sport", ["NBA","NFL","MLB","NHL","SOCCER"])
+SLATE = st.selectbox("Slate", ["Classic","Showdown"])
+SALARY_CAP = 50000
 
 ROSTERS = {
     "NBA": ["PG","SG","SF","PF","C","G","F","UTIL"],
     "NFL": ["QB","RB","RB","WR","WR","WR","TE","FLEX","DST"],
     "MLB": ["P","P","C","1B","2B","3B","SS","OF","OF","OF"],
-    "NHL": ["C","C","W","W","W","D","D","G","UTIL"]
+    "NHL": ["C","C","W","W","W","D","D","G","UTIL"],
+    "SOCCER": ["GK","D","D","M","M","F","F","UTIL"]
 }
 
-ROSTER = ["CPT","UTIL","UTIL","UTIL","UTIL","UTIL"] if SLATE == "Showdown" else ROSTERS[SPORT]
+ROSTER = ["CPT","UTIL","UTIL","UTIL","UTIL","UTIL"] if SLATE=="Showdown" else ROSTERS[SPORT]
 
-# =========================
-# UPLOAD
-# =========================
-uploaded = st.file_uploader("Upload DraftKings CSV", type=["csv"])
+# ======================
+# UPLOADS
+# ======================
+players_file = st.file_uploader("Upload DraftKings Player CSV", type="csv")
+totals_file = st.file_uploader("Upload Team Totals CSV (optional)", type="csv")
 
+# ======================
+# NORMALIZE
+# ======================
 def normalize(df):
     df.columns = [c.lower().strip() for c in df.columns]
     df = df.rename(columns={
         "name":"player",
-        "position":"position",
         "salary":"salary",
-        "avgpointspergame":"projection",
-        "teamabbrev":"team"
+        "position":"position",
+        "teamabbrev":"team",
+        "avgpointspergame":"projection"
     })
 
     for c in ["salary","projection"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    if "ownership" not in df.columns:
-        df["ownership"] = 5.0
-
+    df["ownership"] = pd.to_numeric(df.get("ownership",5), errors="coerce").fillna(5)
     return df
 
-# =========================
+# ======================
+# TEAM TOTALS
+# ======================
+team_totals = {}
+if totals_file:
+    tdf = pd.read_csv(totals_file)
+    team_totals = dict(zip(tdf["team"], tdf["total"]))
+
+# ======================
 # RULES
-# =========================
+# ======================
 def valid(pos, slot):
     if slot in ["UTIL","FLEX","CPT"]:
         return True
     return slot in pos
 
-def stack_bonus(lineup):
-    teams = {}
-    bonus = 0
-    for p in lineup:
-        teams[p["team"]] = teams.get(p["team"], 0) + 1
+def team_total_bonus(p):
+    return team_totals.get(p["team"], 0) * 0.03
 
-    for cnt in teams.values():
-        if SPORT == "MLB" and cnt >= 3:
-            bonus += cnt * 4
-        if SPORT in ["NBA","NHL"] and cnt >= 2:
-            bonus += cnt * 2
-        if SPORT == "NFL" and cnt >= 2:
-            bonus += cnt * 3
-
-    return bonus
-
-# =========================
-# SIMULATION / EV
-# =========================
+# ======================
+# SIMULATION
+# ======================
 def simulate_lineup(lineup):
-    total = 0
+    score = 0
     for p in lineup:
-        mu = p["projection"]
-        total += np.random.normal(mu, mu * 0.30)
-    return total + stack_bonus(lineup)
+        mu = p["projection"] + team_total_bonus(p)
+        score += np.random.normal(mu, mu * 0.30)
+    return score
 
-def ev_score(lineup, sims=500):
-    scores = [simulate_lineup(lineup) for _ in range(sims)]
-    scores.sort(reverse=True)
-    return np.mean(scores[:max(1, int(len(scores)*0.1))])
+PAYOUT_CURVE = [
+    (0.01, 50),
+    (0.05, 10),
+    (0.25, 2),
+]
 
-# =========================
+def lineup_ev(lineup, sims=500):
+    scores = sorted([simulate_lineup(lineup) for _ in range(sims)], reverse=True)
+    ev = 0
+    for pct, mult in PAYOUT_CURVE:
+        idx = int(len(scores) * pct)
+        ev += scores[idx] * mult * 0.01
+    return ev
+
+# ======================
 # OPTIMIZER (LP)
-# =========================
-def build_lineup(df, excluded, exposure, max_exp):
+# ======================
+def build_lineup(df, excluded):
     prob = LpProblem("DFS", LpMaximize)
     x = LpVariable.dicts("p", df.index, 0, 1, LpBinary)
 
     prob += lpSum(
         x[i] * (
             df.loc[i,"projection"]
-            - df.loc[i,"ownership"] * 0.4
+            + team_totals.get(df.loc[i,"team"],0)*0.03
+            - df.loc[i,"ownership"]*0.4
         )
         for i in df.index
     )
@@ -111,26 +119,18 @@ def build_lineup(df, excluded, exposure, max_exp):
     prob += lpSum(x[i] for i in df.index) == len(ROSTER)
 
     for slot in set(ROSTER):
-        prob += lpSum(
-            x[i] for i in df.index if valid(df.loc[i,"position"], slot)
-        ) >= ROSTER.count(slot)
+        prob += lpSum(x[i] for i in df.index if valid(df.loc[i,"position"],slot)) >= ROSTER.count(slot)
 
     for i in df.index:
         if df.loc[i,"player"] in excluded:
             prob += x[i] == 0
 
-    for p, cnt in exposure.items():
-        if cnt / max_exp > 0.6:
-            prob += lpSum(
-                x[i] for i in df.index if df.loc[i,"player"] == p
-            ) == 0
-
     prob.solve()
 
-    lineup = df.loc[[i for i in df.index if x[i].value() == 1]].to_dict("records")
+    lineup = df.loc[[i for i in df.index if x[i].value()==1]].to_dict("records")
 
-    if SLATE == "Showdown" and lineup:
-        cpt = max(lineup, key=lambda p: p["projection"])
+    if SLATE=="Showdown" and lineup:
+        cpt = max(lineup, key=lambda p:p["projection"])
         cpt["salary"] *= 1.5
         cpt["projection"] *= 1.5
 
@@ -139,51 +139,39 @@ def build_lineup(df, excluded, exposure, max_exp):
 
     return lineup
 
-# =========================
-# UI CONTROLS
-# =========================
-if uploaded:
-    df = normalize(pd.read_csv(uploaded))
-    st.success("CSV Loaded")
+# ======================
+# RUN
+# ======================
+if players_file:
+    df = normalize(pd.read_csv(players_file))
 
-    excluded = st.multiselect(
-        "Exclude Players (injury / out)",
-        sorted(df["player"].unique())
-    )
+    st.subheader("Player Pool")
+    excluded = st.multiselect("Exclude Players (injury / bench)", df["player"].tolist())
 
     n = st.slider("Lineups", 1, 50, 20)
-    sims = st.slider("Simulations", 300, 2000, 800)
-    max_exp = st.slider("Max Exposure %", 10, 100, 40)
+    sims = st.slider("Contest Sims", 300, 2000, 800)
 
     if st.button("BUILD PORTFOLIO"):
-        exposure = {}
-        results = []
+        rows = []
+        lineups = []
 
-        for _ in range(n):
-            lineup = build_lineup(df, excluded, exposure, n)
-            if not lineup:
+        for i in range(n):
+            l = build_lineup(df, excluded)
+            if not l:
                 continue
+            ev = lineup_ev(l, sims)
+            lineups.append(l)
 
-            for p in lineup:
-                exposure[p["player"]] = exposure.get(p["player"], 0) + 1
-
-            ev = ev_score(lineup, sims)
-
-            row = {
-                "Salary": int(sum(p["salary"] for p in lineup)),
-                "Projection": round(sum(p["projection"] for p in lineup), 2),
-                "EV": round(ev, 2)
+            r = {
+                "Lineup": i+1,
+                "Salary": int(sum(p["salary"] for p in l)),
+                "Projection": round(sum(p["projection"] for p in l),2),
+                "EV": round(ev,2)
             }
+            for j,p in enumerate(l):
+                r[f"P{j+1}"] = p["player"]
+            rows.append(r)
 
-            for i, p in enumerate(lineup):
-                row[f"P{i+1}"] = p["player"]
-
-            results.append(row)
-
-        out = pd.DataFrame(results).sort_values("EV", ascending=False)
+        out = pd.DataFrame(rows).sort_values("EV", ascending=False)
         st.dataframe(out, use_container_width=True)
-        st.download_button(
-            "Download DraftKings CSV",
-            out.to_csv(index=False),
-            "dfs_pro_engine_lineups.csv"
-        )
+        st.download_button("Download DK CSV", out.to_csv(index=False), "dfs_pro_engine.csv")
