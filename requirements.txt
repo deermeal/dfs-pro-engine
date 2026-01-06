@@ -2,4 +2,11 @@ streamlit
 pandas
 numpy
 pulp
-datetime
+stripe
+fastapi
+uvicorn
+python-dotenv
+sqlalchemy
+requests
+python-jose
+passlib[bcrypt]
